@@ -21,7 +21,7 @@ else:
 
 # Configure Gemini API
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
-model = genai.GenerativeModel("gemini-2.5-flash")
+model = genai.GenerativeModel("gemini-2.0-flash")
 
 # --- Models ---
 class AskRequest(BaseModel):
@@ -47,9 +47,9 @@ def retrieve(query: str, k: int = 4):
     q = query.lower()
     scored = []
     for e in KB:
-        names = [e["name"]] + e.get("aliases", [])
-        best = max(difflib.SequenceMatcher(None, q, n.lower()).ratio() for n in names)
-        if any(n.lower() in q for n in names):
+        names = [e.get("name", "")] + e.get("aliases", [])
+        best = max((difflib.SequenceMatcher(None, q, n.lower()).ratio() for n in names if n), default=0)
+        if any(n.lower() in q for n in names if n):
             best += 0.5
         scored.append((best, e))
     scored.sort(key=lambda x: -x[0])
@@ -96,7 +96,7 @@ def get_floors(building: Optional[str] = Query(None)):
     filtered = KB
     if building:
         filtered = [r for r in filtered if r.get("building", "").lower() == building.lower()]
-    floors = list(set([r["floor"] for r in filtered if "floor" in r]))
+    floors = list(set([str(r["floor"]) for r in filtered if "floor" in r]))
     return FloorListResponse(floors=floors)
 
 @app.get("/rooms", response_model=RoomListResponse)
@@ -125,13 +125,23 @@ def ask(req: AskRequest):
     prompt = f"{SYSTEM}\n\nCONTEXT:\n{context}\n\nUSER MESSAGE: {req.question}"
 
     try:
-        response = model.generate_content(prompt)
+        response = model.generate_content(
+            prompt,
+            generation_config={"response_mime_type": "application/json"}
+        )
         raw = response.text.strip()
+        
+        # Clean markdown wrappers if present
         if raw.startswith("```"):
             raw = raw.strip("`").replace("json", "", 1).strip()
+            
         parsed = json.loads(raw)
-    except Exception:
-        return {"answer": "Sorry, I couldn't process that. Try rephrasing.", "action": {"type": "none"}}
+    except Exception as e:
+        print(f"[Ask Exception]: {e}")
+        return {
+            "answer": "Hello! I am WAV AI. How can I help you navigate the UCLM campus today?",
+            "action": {"type": "none"}
+        }
 
     valid = {e.get("nav_target") for e in hits if "nav_target" in e}
     act = parsed.get("action", {})
