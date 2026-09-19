@@ -163,11 +163,20 @@ def get_buildings():
     return BuildingListResponse(buildings=buildings)
 
 @app.get("/floors", response_model=FloorListResponse)
-def get_floors():
-    floors = list(set([r["floor"] for r in ROOMS]))
+def get_floors(building: Optional[str] = None):
+    if building:
+        floors = list(set([r["floor"] for r in ROOMS if r["building"].lower() == building.lower()]))
+    else:
+        floors = list(set([r["floor"] for r in ROOMS]))
     return FloorListResponse(floors=floors)
 
 @app.get("/rooms", response_model=RoomListResponse)
-def get_rooms():
-    room_objects = [RoomInfo(**r) for r in ROOMS]
+def get_rooms(building: Optional[str] = None, floor: Optional[str] = None):
+    filtered_rooms = ROOMS
+    if building:
+        filtered_rooms = [r for r in filtered_rooms if r["building"].lower() == building.lower()]
+    if floor:
+        filtered_rooms = [r for r in filtered_rooms if r["floor"].lower() == floor.lower()]
+        
+    room_objects = [RoomInfo(**r) for r in filtered_rooms]
     return RoomListResponse(rooms=room_objects)
