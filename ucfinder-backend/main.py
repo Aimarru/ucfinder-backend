@@ -11,7 +11,7 @@ import google.generativeai as genai
 
 app = FastAPI()
 
-# Safe path resolution for kb.json relative to this file
+# Safe path resolution for local kb.json relative to this file
 BASE_DIR = Path(__file__).resolve().parent
 kb_path = BASE_DIR / "kb.json"
 
@@ -61,7 +61,6 @@ class TranscribeResponse(BaseModel):
 
 # --- Helper Functions ---
 def to_room_info(entry: dict) -> RoomInfo:
-    """Maps a kb.json entry to the RoomInfo shape expected by Unity."""
     return RoomInfo(
         room_code=entry.get("room_code", entry.get("name", "")),
         room_name=entry.get("room_name", entry.get("name", "")),
@@ -71,7 +70,7 @@ def to_room_info(entry: dict) -> RoomInfo:
     )
 
 def find_room_direct(query: str):
-    """Exact/substring match on room_code or aliases — fast path, zero AI latency."""
+    """Fast local lookup for exact room code or alias matches in kb.json."""
     q = query.strip().lower()
     for entry in KB:
         code = entry.get("room_code", entry.get("name", "")).lower()
@@ -83,7 +82,7 @@ def find_room_direct(query: str):
     return None
 
 def retrieve(query: str, k: int = 5):
-    """Fuzzy retrieval used to feed CONTEXT to Gemini for general questions."""
+    """Fuzzy retrieval feeding local room context to Gemini."""
     q = query.lower()
     scored = []
     for e in KB:
@@ -95,21 +94,21 @@ def retrieve(query: str, k: int = 5):
     scored.sort(key=lambda x: -x[0])
     return [e for s, e in scored[:k] if s > 0.35]
 
-SYSTEM = """You are WAV AI, the helpful in-app virtual assistant for UCFinder — a 3D campus navigation app for the University of Cebu Lapu-Lapu and Mandaue (UCLM).
+SYSTEM = """You are WAV AI, the in-app assistant for UCFinder — a 3D campus navigation app for the University of Cebu Lapu-Lapu and Mandaue (UCLM).
 
-YOUR SCOPE & ROLE:
-1. Assist users with campus room searches and physical navigation at UCLM.
-2. Answer general questions about UCLM (location, campus offices, programs offered, history, admissions, contact info, announcements). Use Google Search grounding when online verification is needed.
-3. Assist with UCFinder app usage (avatar customization, search features, 3D path display, support).
+YOUR SCOPE:
+1. Help users with UCLM campus room searches and physical navigation.
+2. Answer general questions about UCLM (location, programs, admissions, history, campus announcements, contact details). Use Google Search grounding to look up real-time information online.
+3. Help users understand UCFinder app features (3D path navigation, avatar customization, search).
 
-OUT-OF-SCOPE REDIRECTION:
-If asked about topics completely unrelated to UCLM or UCFinder (e.g. general homework coding, other schools, politics, general world news), politely decline and redirect the user back to UCLM campus navigation or app support.
+STRICT OUT-OF-SCOPE REDIRECTION:
+If asked about topics completely unrelated to UCLM or UCFinder (e.g. general programming homework, other universities, politics, general world news), politely decline and redirect the user back to UCLM campus navigation or app support.
 
-STRICT JSON OUTPUT FORMAT REQUIREMENT:
-You MUST respond with strictly a single raw JSON object. Do not add markdown backticks, markdown code blocks, or explanatory prose outside the JSON.
-Follow this schema:
+STRICT JSON OUTPUT REQUIREMENT:
+Respond ONLY with a single valid raw JSON object. Do not wrap the response in markdown backticks or extra text outside the JSON.
+Structure:
 {
-  "answer": "1-2 short, friendly, plain English sentences answering the query.",
+  "answer": "1-2 short, friendly, plain English sentences answering the query directly.",
   "action": {
     "type": "navigate" or "none",
     "target": "EXACT nav_target from CONTEXT if navigating, otherwise empty string",
@@ -150,7 +149,7 @@ def get_rooms(building: Optional[str] = Query(None), floor: Optional[str] = Quer
 def ask(req: AskRequest):
     question = req.question.strip()
 
-    # 1. Direct Room Lookup (Fast Path)
+    # 1. Fast Path: Check local kb.json for direct room matches
     room = find_room_direct(question)
     if room:
         info = to_room_info(room)
@@ -165,19 +164,18 @@ def ask(req: AskRequest):
             room=info
         )
 
-    # 2. General Queries with Gemini 2.0 Flash + Online Search Grounding
+    # 2. General Queries: Handled live by Gemini 2.0 Flash + Web Search Grounding
     hits = retrieve(question)
     context = json.dumps(hits) if hits else "[]"
 
     prompt = f"""{SYSTEM}
 
-DATABASE ROOM CONTEXT:
+LOCAL ROOM CONTEXT:
 {context}
 
 USER QUESTION: {question}"""
 
     try:
-        # Note: response_mime_type is intentionally omitted to avoid internal search tool execution conflicts
         response = model.generate_content(
             prompt,
             tools=[{"google_search": {}}]
@@ -185,7 +183,7 @@ USER QUESTION: {question}"""
 
         raw = response.text.strip() if response and response.text else ""
 
-        # Strip any markdown fences if present
+        # Clean markdown wrappers if present
         if "```" in raw:
             if "```json" in raw:
                 raw = raw.split("```json")[-1].split("```")[0].strip()
@@ -194,7 +192,6 @@ USER QUESTION: {question}"""
 
         parsed = json.loads(raw)
 
-        # Ensure action payload integrity
         act_data = parsed.get("action", {})
         if not isinstance(act_data, dict) or "type" not in act_data:
             act_data = {"type": "none"}
@@ -211,22 +208,11 @@ USER QUESTION: {question}"""
         )
 
     except Exception as e:
-        print(f"[Gemini Ask Exception]: {e}")
+        print(f"[Gemini Exception]: {e}")
         traceback.print_exc()
 
-        # Context-aware fallback logic
-        q_lower = question.lower()
-        if any(k in q_lower for k in ["where", "location", "address", "located"]):
-            ans = "University of Cebu Lapu-Lapu and Mandaue (UCLM) is located along A.C. Cortes Avenue, Looc, Mandaue City, Cebu, Philippines."
-        elif any(k in q_lower for k in ["when", "create", "found", "start", "built", "established"]):
-            ans = "University of Cebu Lapu-Lapu and Mandaue (UCLM) was established in May 1995."
-        elif any(k in q_lower for k in ["course", "program", "major", "offer"]):
-            ans = "UCLM offers programs in IT, Engineering, Business, Criminology, Education, Nursing, Customs Admin, and Maritime Studies."
-        else:
-            ans = "I couldn't look that up right now. Try entering a room code (e.g., 'A35') or asking about UCFinder features."
-
         return AskResponse(
-            answer=ans,
+            answer="Sorry, I am having trouble connecting right now. Please try asking again.",
             action=ChatActionModel(type="none"),
             found=False,
             room=None
@@ -240,12 +226,10 @@ async def transcribe(audio: UploadFile = File(...)):
         audio_bytes = await audio.read()
         ext = Path(audio.filename).suffix if audio.filename else ".wav"
 
-        # Safe temporary file on disk
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_file:
             temp_file.write(audio_bytes)
             temp_path = Path(temp_file.name)
 
-        # Upload audio directly to Gemini File API
         audio_file = genai.upload_file(path=str(temp_path))
 
         response = model.generate_content([
