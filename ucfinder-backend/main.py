@@ -6,8 +6,8 @@ import json
 import difflib
 import os
 import traceback
+import tempfile
 import google.generativeai as genai
-import openai
 
 app = FastAPI()
 
@@ -25,15 +25,7 @@ else:
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
 model = genai.GenerativeModel("gemini-2.0-flash")
 
-# Configure OpenAI (Whisper for STT)
-openai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
-
-
 # --- Models ---
-# NOTE: field names below MUST match Unity's ChatDataModels.cs exactly
-# (room_code, room_name, building, floor, nav_target) — JsonUtility matches
-# by field name, so any mismatch silently leaves those fields blank in Unity.
-
 class AskRequest(BaseModel):
     question: str
 
@@ -67,11 +59,8 @@ class RoomListResponse(BaseModel):
 class TranscribeResponse(BaseModel):
     text: str
 
-
 # --- Helper Functions ---
-
 def to_room_info(entry: dict) -> RoomInfo:
-    """Maps a kb.json entry to the RoomInfo shape Unity expects."""
     return RoomInfo(
         room_code=entry.get("room_code", entry.get("name", "")),
         room_name=entry.get("room_name", entry.get("name", "")),
@@ -80,9 +69,7 @@ def to_room_info(entry: dict) -> RoomInfo:
         nav_target=entry.get("nav_target", "")
     )
 
-
 def find_room_direct(query: str):
-    """Exact/substring match on room_code or aliases — fast path, no AI needed."""
     q = query.strip().lower()
     for entry in KB:
         code = entry.get("room_code", entry.get("name", "")).lower()
@@ -93,9 +80,7 @@ def find_room_direct(query: str):
                 return entry
     return None
 
-
 def retrieve(query: str, k: int = 4):
-    """Fuzzy retrieval used to feed CONTEXT to Gemini for general questions."""
     q = query.lower()
     scored = []
     for e in KB:
@@ -107,38 +92,24 @@ def retrieve(query: str, k: int = 4):
     scored.sort(key=lambda x: -x[0])
     return [e for s, e in scored[:k] if s > 0.35]
 
-
 SYSTEM = """You are WAV AI, the in-app assistant for UCFinder — a 3D campus
 navigation app for the University of Cebu Lapu-Lapu and Mandaue (UCLM).
 
-KNOWN FACTS ABOUT UCLM (use these when relevant, never invent beyond them):
-- University of Cebu Lapu-Lapu and Mandaue (UCLM) is a private university,
-  part of the University of Cebu system.
+KNOWN FACTS ABOUT UCLM:
+- University of Cebu Lapu-Lapu and Mandaue (UCLM) is a private university, part of the University of Cebu system.
 - Location: A.C. Cortes Avenue, Looc, Mandaue City, Cebu, Philippines.
-- Offers programs including Information Technology, Engineering, Business,
-  Education, Criminology, and Hospitality Management.
-# TODO: add more verified facts here (founding year, more programs, contact info)
+- Offers programs including Information Technology, Engineering, Business, Education, Criminology, and Hospitality Management.
 
-YOUR SCOPE — you can help with:
-- General questions about UCLM itself (location, programs, what the school is)
-- How to use the UCFinder app (navigation, avatar, search, this chat)
-- Contacting UCFinder support
-- General greetings/small talk related to helping the user
-
-If asked about anything clearly outside both UCLM and the app (homework, other
-schools, unrelated general knowledge, coding help, etc.), politely decline and
-redirect to what you can help with.
+YOUR SCOPE:
+- General questions about UCLM campus locations, offices, and facilities
+- App features (navigation, avatar customization, search)
+- Contacting support or general campus greetings
 
 RULES:
-- For a SPECIFIC ROOM location, you will be given CONTEXT with room data if a
-  match was found. If CONTEXT is empty and the user seems to want a room,
-  tell them to type the exact room code or use the Find a Room button.
-- Never invent a floor, building, room, contact, or schedule not in CONTEXT.
+- Answer ONLY using CONTEXT when finding rooms.
 - Keep answers to 1-2 short sentences, friendly, plain English.
-- Reply with ONLY a JSON object, no markdown fences, no explanation outside it:
-  {"answer": "...", "action": {"type": "none"}}
+- Reply with ONLY a JSON object: {"answer": "...", "action": {"type": "none"}}
 """
-
 
 # --- Routes ---
 
@@ -146,12 +117,10 @@ RULES:
 def ping():
     return {"status": "ok"}
 
-
 @app.get("/buildings", response_model=BuildingListResponse)
 def get_buildings():
     buildings = sorted(set(r["building"] for r in KB if "building" in r))
     return BuildingListResponse(buildings=buildings)
-
 
 @app.get("/floors", response_model=FloorListResponse)
 def get_floors(building: Optional[str] = Query(None)):
@@ -160,7 +129,6 @@ def get_floors(building: Optional[str] = Query(None)):
         filtered = [r for r in filtered if r.get("building", "").lower() == building.lower()]
     floors = sorted(set(str(r["floor"]) for r in filtered if "floor" in r))
     return FloorListResponse(floors=floors)
-
 
 @app.get("/rooms", response_model=RoomListResponse)
 def get_rooms(building: Optional[str] = Query(None), floor: Optional[str] = Query(None)):
@@ -172,12 +140,10 @@ def get_rooms(building: Optional[str] = Query(None), floor: Optional[str] = Quer
 
     return RoomListResponse(rooms=[to_room_info(r) for r in filtered])
 
-
 @app.post("/ask", response_model=AskResponse)
 def ask(req: AskRequest):
     question = req.question.strip()
 
-    # 1. Direct room lookup first — exact/fast, no AI cost, no hallucination risk
     room = find_room_direct(question)
     if room:
         info = to_room_info(room)
@@ -192,7 +158,6 @@ def ask(req: AskRequest):
             room=info
         )
 
-    # 2. Otherwise, fall back to Gemini with fuzzy-matched CONTEXT
     hits = retrieve(question)
     context = json.dumps(hits) if hits else "[]"
     prompt = f"{SYSTEM}\n\nCONTEXT:\n{context}\n\nUSER MESSAGE: {question}"
@@ -210,11 +175,10 @@ def ask(req: AskRequest):
         parsed = json.loads(raw)
 
     except Exception:
-        # Log the REAL error to Render's logs instead of silently swallowing it
         print("[Ask Exception]")
         traceback.print_exc()
         return AskResponse(
-            answer="Sorry, I couldn't process that. Try entering a room code directly, or check the Help section.",
+            answer="Sorry, I couldn't process that. Try entering a room code directly.",
             action=ChatActionModel(type="none"),
             found=False,
             room=None
@@ -232,24 +196,47 @@ def ask(req: AskRequest):
         room=None
     )
 
-
 @app.post("/transcribe", response_model=TranscribeResponse)
 async def transcribe(audio: UploadFile = File(...)):
+    temp_path = None
+    audio_file = None
     try:
         audio_bytes = await audio.read()
-        temp_path = BASE_DIR / "temp_audio.wav"
-        with open(temp_path, "wb") as f:
-            f.write(audio_bytes)
+        ext = Path(audio.filename).suffix if audio.filename else ".wav"
 
-        with open(temp_path, "rb") as f:
-            result = openai_client.audio.transcriptions.create(
-                model="whisper-1",
-                file=f
-            )
+        # 1. Create a safe temporary file on disk
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_file:
+            temp_file.write(audio_bytes)
+            temp_path = Path(temp_file.name)
 
-        return TranscribeResponse(text=result.text)
+        # 2. Upload file to Google Generative AI temporary storage
+        audio_file = genai.upload_file(path=str(temp_path))
+
+        # 3. Prompt Gemini 2.0 Flash to transcribe spoken audio directly
+        response = model.generate_content([
+            "Transcribe the spoken words in this audio exactly into plain text. Output ONLY the transcribed text, nothing else.",
+            audio_file
+        ])
+
+        transcribed_text = response.text.strip() if response.text else ""
+        return TranscribeResponse(text=transcribed_text)
 
     except Exception:
-        print("[Transcribe Exception]")
+        print("[Gemini Transcribe Exception]")
         traceback.print_exc()
         return TranscribeResponse(text="")
+
+    finally:
+        # 4. Clean up Google Cloud temporary storage reference
+        if audio_file:
+            try:
+                genai.delete_file(audio_file.name)
+            except Exception:
+                pass
+
+        # 5. Clean up local Render server temporary file
+        if temp_path and temp_path.exists():
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
