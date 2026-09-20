@@ -30,9 +30,9 @@ else:
 # Initialize client using environment variable safely
 client = genai_client.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
-# Model configuration with automatic fallback
+# Primary and Fallback model configuration
 PRIMARY_MODEL = "gemini-3.6-flash"
-FALLBACK_MODEL = "gemini-2.5-flash"
+FALLBACK_MODEL = "gemini-2.0-flash"
 
 
 # --- Models ---
@@ -82,7 +82,8 @@ class TranscribeResponse(BaseModel):
 
 def generate_with_retry(contents, primary_model=PRIMARY_MODEL, fallback_model=FALLBACK_MODEL, max_retries=3):
     """
-    Robust wrapper that handles 400, 401, 403, 404, 429, 500, 503, and 504 errors.
+    Executes request using gemini-3.6-flash first. If 429 rate limit or 5xx server
+    errors occur, retries with exponential backoff before falling back to gemini-2.0-flash.
     """
     models_to_try = [primary_model, fallback_model]
 
@@ -102,31 +103,33 @@ def generate_with_retry(contents, primary_model=PRIMARY_MODEL, fallback_model=FA
                 err_code = getattr(e, "code", None)
                 print(f"[ClientError on {model}] Code {err_code}: {e}")
 
-                # If 404 Model Not Found, switch models immediately without retrying this model
+                # If 404 Model Not Found, switch to fallback model immediately
                 if err_code == 404:
                     print(f"[404 NotFound] Model '{model}' not found or deprecated. Switching to fallback...")
                     break
 
-                # If 401/403 Auth errors, do not retry (it will keep failing)
+                # If 401/403 Auth errors, abort
                 if err_code in (401, 403):
                     print(f"[{err_code} Auth Error] API Key missing or invalid.")
                     return None
 
-                # If 429 Rate Limit Exceeded, back off and retry
-                if err_code == 429 and attempt < max_retries - 1:
-                    print(f"[429 Rate Limit] Retrying {model} in {delay}s... (Attempt {attempt + 1}/{max_retries})")
-                    time.sleep(delay)
-                    delay *= 2
-                    continue
+                # If 429 Rate Limit Exceeded, wait & retry; if retries exhausted, move to fallback model
+                if err_code == 429:
+                    if attempt < max_retries - 1:
+                        print(f"[429 Rate Limit] Retrying {model} in {delay}s... (Attempt {attempt + 1}/{max_retries})")
+                        time.sleep(delay)
+                        delay *= 2
+                        continue
+                    else:
+                        print(f"[429 Rate Limit] Max retries exhausted for {model}. Switching to fallback model...")
+                        break
 
-                # Bad Request (400) or other 4xx errors - exit retry loop
                 break
 
             except ServerError as e:
                 err_code = getattr(e, "code", None)
                 print(f"[ServerError on {model}] Code {err_code}: {e}")
 
-                # Retry on 500 (Internal), 503 (Overloaded), 504 (Timeout)
                 if attempt < max_retries - 1:
                     print(f"[Server Error] Retrying {model} in {delay}s... (Attempt {attempt + 1}/{max_retries})")
                     time.sleep(delay)
