@@ -94,31 +94,20 @@ def retrieve(query: str, k: int = 5):
     scored.sort(key=lambda x: -x[0])
     return [e for s, e in scored[:k] if s > 0.35]
 
-# Extended Knowledge Scope for UCLM
 SYSTEM = """You are WAV AI, the helpful in-app virtual assistant for UCFinder — a 3D campus navigation app for the University of Cebu Lapu-Lapu and Mandaue (UCLM).
 
-EXPANDED KNOWLEDGE BASE & SCOPE — You can discuss:
-1. UCLM Campus Information:
-   - Full Name: University of Cebu Lapu-Lapu and Mandaue (UCLM)
-   - Location: A.C. Cortes Avenue, Looc, Mandaue City, Cebu, Philippines
-   - Affiliation: Part of the University of Cebu System
-   - Offered Academic Programs: College of Information Technology & Computer Studies, College of Engineering, College of Business & Accountancy, College of Education, College of Criminology, College of Nursing, College of Custom Administration, Maritime Education, and Senior High School.
-   - Campus Facilities: Library, Canteen, Student Affairs Office, Guidance Office, Registrar, Accounting, Clinic, Comfort Rooms, Sports Complex, and Auditoriums.
-
-2. UCFinder App Assistance:
-   - How to search for rooms, view 3D campus routes, and customize avatars.
-   - Contacting support or resolving technical issues.
-
-3. General Campus Interactions:
-   - Friendly greetings, campus direction help, and general student queries regarding UCLM.
+YOUR ROLE:
+1. Assist with room searches and campus navigation at UCLM.
+2. Answer general questions about UCLM (campus address, courses offered, admissions, contacts, announcements, etc.). Use the provided Google Search capability to look up verified information online if needed.
+3. Help users understand UCFinder app features (search, 3D route guidance, avatar customization).
 
 STRICT OUT-OF-SCOPE REDIRECTION:
-If asked about topics completely unrelated to UCLM or UCFinder (e.g., general programming homework, other universities, politics, global news, general entertainment), politely decline and redirect them to UCLM campus navigation or app support.
+If asked about topics completely unrelated to UCLM or UCFinder (e.g., general programming, other universities, politics, news), politely decline and redirect to UCLM campus navigation or app support.
 
 RESPONSE FORMAT REQUIREMENTS:
-You MUST reply with ONLY a single JSON object. No extra text or markdown fences outside the JSON:
+Reply ONLY with a single JSON object (no markdown formatting or text outside the JSON):
 {
-  "answer": "1-2 short, friendly, clear sentences answering the query.",
+  "answer": "1-2 short, friendly sentences answering the query directly.",
   "action": {
     "type": "navigate" or "none",
     "target": "EXACT nav_target from CONTEXT or empty string",
@@ -160,7 +149,7 @@ def get_rooms(building: Optional[str] = Query(None), floor: Optional[str] = Quer
 def ask(req: AskRequest):
     question = req.question.strip()
 
-    # 1. Direct Room Match Fast Path
+    # 1. Direct Room Match Fast Path (Zero latency, exact match)
     room = find_room_direct(question)
     if room:
         info = to_room_info(room)
@@ -175,15 +164,17 @@ def ask(req: AskRequest):
             room=info
         )
 
-    # 2. General Query Handling via Gemini 2.0 Flash
+    # 2. General Query Handling via Gemini 2.0 Flash + Live Web Search
     hits = retrieve(question)
     context = json.dumps(hits) if hits else "[]"
     prompt = f"{SYSTEM}\n\nDATABASE ROOM CONTEXT:\n{context}\n\nUSER QUESTION: {question}"
 
     try:
+        # Enable Google Search grounding tool so Gemini scrubs real-time info online
         response = model.generate_content(
             prompt,
-            generation_config={"response_mime_type": "application/json"}
+            generation_config={"response_mime_type": "application/json"},
+            tools=[{"google_search": {}}]
         )
         raw = response.text.strip()
 
@@ -212,17 +203,9 @@ def ask(req: AskRequest):
         print(f"[Gemini Exception]: {e}")
         traceback.print_exc()
 
-        # Context-aware fallback responses
-        q_lower = question.lower()
-        if any(k in q_lower for k in ["where", "location", "address", "located"]):
-            fallback = "UCLM is located along A.C. Cortes Avenue, Looc, Mandaue City, Cebu, Philippines."
-        elif any(k in q_lower for k in ["course", "program", "major", "offer"]):
-            fallback = "UCLM offers programs in IT, Engineering, Business, Criminology, Education, Nursing, Customs Admin, and Maritime Studies."
-        else:
-            fallback = "I couldn't process that request right now. Try asking about UCLM locations or enter a room code directly."
-
+        # Dynamic error recovery message
         return AskResponse(
-            answer=fallback,
+            answer="I am having trouble retrieving that information right now. Please try asking again or search by room code.",
             action=ChatActionModel(type="none"),
             found=False,
             room=None
