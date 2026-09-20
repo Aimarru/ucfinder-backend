@@ -1,12 +1,13 @@
-from fastapi import FastAPI, Query, UploadFile, File
-from pydantic import BaseModel
-from typing import List, Optional
-from pathlib import Path
+import os
 import json
 import difflib
-import os
-import traceback
 import tempfile
+import traceback
+from pathlib import Path
+from typing import List, Optional
+
+from fastapi import FastAPI, Query, UploadFile, File
+from pydantic import BaseModel
 from google import genai as genai_client
 
 app = FastAPI()
@@ -20,18 +21,22 @@ if kb_path.exists():
 else:
     KB = []
 
-client = genai_client.Client(api_key=os.environ.get("GEMINI_API_KEY", ""))
-GEMINI_MODEL = "gemini-3.6-flash"
+# Initialize client using environment variable safely
+client = genai_client.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+GEMINI_MODEL = "gemini-3.8-flash"
 
 
 # --- Models ---
+
 class AskRequest(BaseModel):
     question: str
+
 
 class ChatActionModel(BaseModel):
     type: str
     target: Optional[str] = None
     label: Optional[str] = None
+
 
 class RoomInfo(BaseModel):
     room_code: str
@@ -40,26 +45,32 @@ class RoomInfo(BaseModel):
     floor: str
     nav_target: str
 
+
 class AskResponse(BaseModel):
     answer: str
     action: ChatActionModel
     found: bool
     room: Optional[RoomInfo] = None
 
+
 class BuildingListResponse(BaseModel):
     buildings: List[str]
+
 
 class FloorListResponse(BaseModel):
     floors: List[str]
 
+
 class RoomListResponse(BaseModel):
     rooms: List[RoomInfo]
+
 
 class TranscribeResponse(BaseModel):
     text: str
 
 
 # --- Helper Functions ---
+
 def to_room_info(entry: dict) -> RoomInfo:
     return RoomInfo(
         room_code=entry.get("room_code", entry.get("name", "")),
@@ -68,6 +79,7 @@ def to_room_info(entry: dict) -> RoomInfo:
         floor=str(entry.get("floor", "")),
         nav_target=entry.get("nav_target", "")
     )
+
 
 def find_room_direct(query: str):
     q = query.strip().lower()
@@ -79,6 +91,7 @@ def find_room_direct(query: str):
             if alias.lower() in q:
                 return entry
     return None
+
 
 def retrieve(query: str, k: int = 5):
     q = query.lower()
@@ -163,12 +176,12 @@ conversational sentences only.
 
 USER QUESTION: {question}"""
 
-        response = client.models.generate_content(
+        interaction = client.interactions.create(
             model=GEMINI_MODEL,
-            contents=prompt
+            input=prompt
         )
 
-        answer_text = response.text.strip() if response and response.text else \
+        answer_text = interaction.output_text.strip() if interaction and interaction.output_text else \
             "Sorry, I don't have an answer for that right now."
 
         return AskResponse(
@@ -204,15 +217,15 @@ async def transcribe(audio: UploadFile = File(...)):
 
         audio_file = client.files.upload(file=str(temp_path))
 
-        response = client.models.generate_content(
+        interaction = client.interactions.create(
             model=GEMINI_MODEL,
-            contents=[
+            input=[
                 "Transcribe the spoken words in this audio exactly into plain text. Output ONLY the transcribed text, nothing else.",
                 audio_file
             ]
         )
 
-        transcribed_text = response.text.strip() if response and response.text else ""
+        transcribed_text = interaction.output_text.strip() if interaction and interaction.output_text else ""
         return TranscribeResponse(text=transcribed_text)
 
     except Exception:
