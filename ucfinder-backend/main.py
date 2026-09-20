@@ -149,10 +149,10 @@ def ask(req: AskRequest):
             room=info
         )
 
-    # 2. General Queries — single Gemini call with live web search grounding.
-    #    No forced JSON mode here: Gemini's API does not support combining
-    #    tools (google_search) with response_mime_type=json in one call.
-    #    We take the plain text answer and build the JSON response ourselves.
+    # 2. General Queries — plain Gemini call, no search grounding.
+    #    (The installed SDK version does not support the google_search
+    #    tool dict shape used earlier — it was crashing every call.
+    #    Answers now come from Gemini's own knowledge, no live web search.)
     try:
         prompt = f"""You are WAV AI, the in-app assistant for UCFinder — a 3D campus
 navigation app for the University of Cebu Lapu-Lapu and Mandaue (UCLM).
@@ -160,8 +160,8 @@ navigation app for the University of Cebu Lapu-Lapu and Mandaue (UCLM).
 Answer the user's question in 1-2 short, friendly, plain English sentences.
 
 Your scope: UCLM campus info (location, programs, admissions, history,
-announcements, contact details), and how to use the UCFinder app (3D
-navigation, avatar customization, search, this chat).
+general facts), and how to use the UCFinder app (3D navigation, avatar
+customization, search, this chat).
 
 If the question is clearly unrelated to UCLM or UCFinder (homework help,
 other schools, general world topics, coding help, etc.), politely decline
@@ -172,10 +172,7 @@ conversational sentences only.
 
 USER QUESTION: {question}"""
 
-        response = model.generate_content(
-            prompt,
-            tools=[{"google_search": {}}]
-        )
+        response = model.generate_content(prompt)
 
         answer_text = response.text.strip() if response and response.text else \
             "Sorry, I don't have an answer for that right now."
