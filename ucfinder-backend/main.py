@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import difflib
 import tempfile
 import traceback
@@ -9,6 +10,11 @@ from typing import List, Optional
 from fastapi import FastAPI, Query, UploadFile, File
 from pydantic import BaseModel
 from google import genai as genai_client
+from google.genai.errors import (
+    APIError,
+    ClientError,
+    ServerError,
+)
 
 app = FastAPI()
 
@@ -23,7 +29,10 @@ else:
 
 # Initialize client using environment variable safely
 client = genai_client.Client(api_key=os.environ.get("GEMINI_API_KEY"))
-GEMINI_MODEL = "gemini-3.6-flash"
+
+# Model configuration with automatic fallback
+PRIMARY_MODEL = "gemini-3.6-flash"
+FALLBACK_MODEL = "gemini-2.5-flash"
 
 
 # --- Models ---
@@ -69,6 +78,77 @@ class TranscribeResponse(BaseModel):
     text: str
 
 
+# --- Robust Gemini Call Handler ---
+
+def generate_with_retry(contents, primary_model=PRIMARY_MODEL, fallback_model=FALLBACK_MODEL, max_retries=3):
+    """
+    Robust wrapper that handles 400, 401, 403, 404, 429, 500, 503, and 504 errors.
+    """
+    models_to_try = [primary_model, fallback_model]
+
+    for model in models_to_try:
+        delay = 2  # Start backoff at 2 seconds
+        for attempt in range(max_retries):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=contents
+                )
+                if response and response.text:
+                    return response.text.strip()
+                return ""
+
+            except ClientError as e:
+                err_code = getattr(e, "code", None)
+                print(f"[ClientError on {model}] Code {err_code}: {e}")
+
+                # If 404 Model Not Found, switch models immediately without retrying this model
+                if err_code == 404:
+                    print(f"[404 NotFound] Model '{model}' not found or deprecated. Switching to fallback...")
+                    break
+
+                # If 401/403 Auth errors, do not retry (it will keep failing)
+                if err_code in (401, 403):
+                    print(f"[{err_code} Auth Error] API Key missing or invalid.")
+                    return None
+
+                # If 429 Rate Limit Exceeded, back off and retry
+                if err_code == 429 and attempt < max_retries - 1:
+                    print(f"[429 Rate Limit] Retrying {model} in {delay}s... (Attempt {attempt + 1}/{max_retries})")
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+
+                # Bad Request (400) or other 4xx errors - exit retry loop
+                break
+
+            except ServerError as e:
+                err_code = getattr(e, "code", None)
+                print(f"[ServerError on {model}] Code {err_code}: {e}")
+
+                # Retry on 500 (Internal), 503 (Overloaded), 504 (Timeout)
+                if attempt < max_retries - 1:
+                    print(f"[Server Error] Retrying {model} in {delay}s... (Attempt {attempt + 1}/{max_retries})")
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                break
+
+            except APIError as e:
+                print(f"[Generic APIError on {model}]: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                break
+
+            except Exception as e:
+                print(f"[Unexpected Exception on {model}]: {e}")
+                break
+
+    return None
+
+
 # --- Helper Functions ---
 
 def to_room_info(entry: dict) -> RoomInfo:
@@ -91,19 +171,6 @@ def find_room_direct(query: str):
             if alias.lower() in q:
                 return entry
     return None
-
-
-def retrieve(query: str, k: int = 5):
-    q = query.lower()
-    scored = []
-    for e in KB:
-        names = [e.get("room_code", e.get("name", ""))] + e.get("aliases", [])
-        best = max((difflib.SequenceMatcher(None, q, n.lower()).ratio() for n in names if n), default=0)
-        if any(n.lower() in q for n in names if n):
-            best += 0.5
-        scored.append((best, e))
-    scored.sort(key=lambda x: -x[0])
-    return [e for s, e in scored[:k] if s > 0.35]
 
 
 # --- Routes ---
@@ -176,13 +243,10 @@ conversational sentences only.
 
 USER QUESTION: {question}"""
 
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt
-        )
+        answer_text = generate_with_retry(prompt)
 
-        answer_text = response.text.strip() if response and response.text else \
-            "Sorry, I don't have an answer for that right now."
+        if not answer_text:
+            answer_text = "Sorry, our AI system is currently busy or offline. Please try asking again in a few moments!"
 
         return AskResponse(
             answer=answer_text,
@@ -217,15 +281,15 @@ async def transcribe(audio: UploadFile = File(...)):
 
         audio_file = client.files.upload(file=str(temp_path))
 
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=[
-                "Transcribe the spoken words in this audio exactly into plain text. Output ONLY the transcribed text, nothing else.",
-                audio_file
-            ]
+        system_prompt = (
+            "You are a fast speech-to-text engine for the UCLM UCFinder campus navigation app. "
+            "Transcribe the audio accurately into plain English text. "
+            "Common terms include room numbers (e.g., A35, CBE901, Room 101), building names (e.g., Annex 2, Main Building), "
+            "and navigation phrases like 'Where is', 'How to go to', or 'Find'. "
+            "Output ONLY the recognized phrase as plain text without extra commentary or punctuation."
         )
 
-        transcribed_text = response.text.strip() if response and response.text else ""
+        transcribed_text = generate_with_retry([system_prompt, audio_file]) or ""
         return TranscribeResponse(text=transcribed_text)
 
     except Exception:
