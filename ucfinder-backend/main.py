@@ -7,11 +7,10 @@ import difflib
 import os
 import traceback
 import tempfile
-import google.generativeai as genai
+from google import genai as genai_client
 
 app = FastAPI()
 
-# Safe path resolution for local kb.json relative to this file
 BASE_DIR = Path(__file__).resolve().parent
 kb_path = BASE_DIR / "kb.json"
 
@@ -21,9 +20,8 @@ if kb_path.exists():
 else:
     KB = []
 
-# Configure Gemini API
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
-model = genai.GenerativeModel("gemini-3.6-flash")
+client = genai_client.Client(api_key=os.environ.get("GEMINI_API_KEY", ""))
+GEMINI_MODEL = "gemini-3.6-flash"
 
 
 # --- Models ---
@@ -72,7 +70,6 @@ def to_room_info(entry: dict) -> RoomInfo:
     )
 
 def find_room_direct(query: str):
-    """Fast local lookup for exact room code or alias matches in kb.json."""
     q = query.strip().lower()
     for entry in KB:
         code = entry.get("room_code", entry.get("name", "")).lower()
@@ -84,7 +81,6 @@ def find_room_direct(query: str):
     return None
 
 def retrieve(query: str, k: int = 5):
-    """Fuzzy retrieval — currently unused by /ask but kept for future use."""
     q = query.lower()
     scored = []
     for e in KB:
@@ -134,7 +130,6 @@ def get_rooms(building: Optional[str] = Query(None), floor: Optional[str] = Quer
 def ask(req: AskRequest):
     question = req.question.strip()
 
-    # 1. Direct Room Match (Check local kb.json)
     room = find_room_direct(question)
     if room:
         info = to_room_info(room)
@@ -149,10 +144,6 @@ def ask(req: AskRequest):
             room=info
         )
 
-    # 2. General Queries — plain Gemini call, no search grounding.
-    #    (The installed SDK version does not support the google_search
-    #    tool dict shape used earlier — it was crashing every call.
-    #    Answers now come from Gemini's own knowledge, no live web search.)
     try:
         prompt = f"""You are WAV AI, the in-app assistant for UCFinder — a 3D campus
 navigation app for the University of Cebu Lapu-Lapu and Mandaue (UCLM).
@@ -172,7 +163,10 @@ conversational sentences only.
 
 USER QUESTION: {question}"""
 
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt
+        )
 
         answer_text = response.text.strip() if response and response.text else \
             "Sorry, I don't have an answer for that right now."
@@ -208,12 +202,15 @@ async def transcribe(audio: UploadFile = File(...)):
             temp_file.write(audio_bytes)
             temp_path = Path(temp_file.name)
 
-        audio_file = genai.upload_file(path=str(temp_path))
+        audio_file = client.files.upload(file=str(temp_path))
 
-        response = model.generate_content([
-            "Transcribe the spoken words in this audio exactly into plain text. Output ONLY the transcribed text, nothing else.",
-            audio_file
-        ])
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[
+                "Transcribe the spoken words in this audio exactly into plain text. Output ONLY the transcribed text, nothing else.",
+                audio_file
+            ]
+        )
 
         transcribed_text = response.text.strip() if response and response.text else ""
         return TranscribeResponse(text=transcribed_text)
@@ -226,7 +223,7 @@ async def transcribe(audio: UploadFile = File(...)):
     finally:
         if audio_file:
             try:
-                genai.delete_file(audio_file.name)
+                client.files.delete(name=audio_file.name)
             except Exception:
                 pass
 
