@@ -5,6 +5,7 @@ from pathlib import Path
 import json
 import difflib
 import os
+import re
 import traceback
 import tempfile
 import google.generativeai as genai
@@ -149,7 +150,7 @@ def get_rooms(building: Optional[str] = Query(None), floor: Optional[str] = Quer
 def ask(req: AskRequest):
     question = req.question.strip()
 
-    # 1. Fast Path: Check local kb.json for direct room matches
+    # 1. Direct Room Match (Check local kb.json)
     room = find_room_direct(question)
     if room:
         info = to_room_info(room)
@@ -164,7 +165,7 @@ def ask(req: AskRequest):
             room=info
         )
 
-    # 2. General Queries: Handled live by Gemini 2.0 Flash + Web Search Grounding
+    # 2. General Queries: Handled by Gemini 2.0 Flash + Web Search Grounding
     hits = retrieve(question)
     context = json.dumps(hits) if hits else "[]"
 
@@ -181,14 +182,14 @@ USER QUESTION: {question}"""
             tools=[{"google_search": {}}]
         )
 
-        raw = response.text.strip() if response and response.text else ""
+        raw = ""
+        if response and response.text:
+            raw = response.text.strip()
 
-        # Clean markdown wrappers if present
-        if "```" in raw:
-            if "```json" in raw:
-                raw = raw.split("```json")[-1].split("```")[0].strip()
-            else:
-                raw = raw.replace("```", "").strip()
+        # Extract only the JSON block between '{' and '}' to avoid search metadata conflicts
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if json_match:
+            raw = json_match.group(0)
 
         parsed = json.loads(raw)
 
