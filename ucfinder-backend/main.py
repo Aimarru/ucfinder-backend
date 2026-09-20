@@ -5,7 +5,6 @@ from pathlib import Path
 import json
 import difflib
 import os
-import re
 import traceback
 import tempfile
 import google.generativeai as genai
@@ -25,6 +24,7 @@ else:
 # Configure Gemini API
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
 model = genai.GenerativeModel("gemini-2.0-flash")
+
 
 # --- Models ---
 class AskRequest(BaseModel):
@@ -60,6 +60,7 @@ class RoomListResponse(BaseModel):
 class TranscribeResponse(BaseModel):
     text: str
 
+
 # --- Helper Functions ---
 def to_room_info(entry: dict) -> RoomInfo:
     return RoomInfo(
@@ -83,7 +84,7 @@ def find_room_direct(query: str):
     return None
 
 def retrieve(query: str, k: int = 5):
-    """Fuzzy retrieval feeding local room context to Gemini."""
+    """Fuzzy retrieval — currently unused by /ask but kept for future use."""
     q = query.lower()
     scored = []
     for e in KB:
@@ -95,24 +96,6 @@ def retrieve(query: str, k: int = 5):
     scored.sort(key=lambda x: -x[0])
     return [e for s, e in scored[:k] if s > 0.35]
 
-SYSTEM = """You are WAV AI, the in-app assistant for UCFinder — a 3D campus navigation app for the University of Cebu Lapu-Lapu and Mandaue (UCLM).
-
-YOUR SCOPE:
-1. Help users with UCLM campus room searches and physical navigation.
-2. Answer general questions about UCLM (location, programs, admissions, history, campus announcements, contact details).
-3. Help users understand UCFinder app features (3D path navigation, avatar customization, search).
-
-STRICT OUT-OF-SCOPE REDIRECTION:
-If asked about topics completely unrelated to UCLM or UCFinder (e.g. general programming homework, other schools, politics, general world news), politely decline and redirect the user back to UCLM campus navigation or app support.
-
-STRICT JSON OUTPUT REQUIREMENT:
-Respond ONLY with a single valid raw JSON object matching this structure exactly:
-{
-  "answer": "1-2 short, friendly, plain English sentences answering the query directly.",
-  "action": {
-    "type": "none"
-  }
-}"""
 
 # --- Routes ---
 
@@ -120,10 +103,12 @@ Respond ONLY with a single valid raw JSON object matching this structure exactly
 def ping():
     return {"status": "ok"}
 
+
 @app.get("/buildings", response_model=BuildingListResponse)
 def get_buildings():
     buildings = sorted(set(r["building"] for r in KB if "building" in r))
     return BuildingListResponse(buildings=buildings)
+
 
 @app.get("/floors", response_model=FloorListResponse)
 def get_floors(building: Optional[str] = Query(None)):
@@ -132,6 +117,7 @@ def get_floors(building: Optional[str] = Query(None)):
         filtered = [r for r in filtered if r.get("building", "").lower() == building.lower()]
     floors = sorted(set(str(r["floor"]) for r in filtered if "floor" in r))
     return FloorListResponse(floors=floors)
+
 
 @app.get("/rooms", response_model=RoomListResponse)
 def get_rooms(building: Optional[str] = Query(None), floor: Optional[str] = Query(None)):
@@ -142,6 +128,7 @@ def get_rooms(building: Optional[str] = Query(None), floor: Optional[str] = Quer
         filtered = [r for r in filtered if str(r.get("floor", "")).lower() == floor.lower()]
 
     return RoomListResponse(rooms=[to_room_info(r) for r in filtered])
+
 
 @app.post("/ask", response_model=AskResponse)
 def ask(req: AskRequest):
@@ -162,54 +149,46 @@ def ask(req: AskRequest):
             room=info
         )
 
-    # 2. General Queries (2-Step Execution: Grounded Web Search -> JSON Formatting)
-    hits = retrieve(question)
-    context = json.dumps(hits) if hits else "[]"
-
+    # 2. General Queries — single Gemini call with live web search grounding.
+    #    No forced JSON mode here: Gemini's API does not support combining
+    #    tools (google_search) with response_mime_type=json in one call.
+    #    We take the plain text answer and build the JSON response ourselves.
     try:
-        # Step A: Perform live web search using Google Search grounding
-        search_prompt = f"Answer this query about UCLM (University of Cebu Lapu-Lapu and Mandaue) in 1-2 factual sentences: {question}"
-        search_response = model.generate_content(
-            search_prompt,
+        prompt = f"""You are WAV AI, the in-app assistant for UCFinder — a 3D campus
+navigation app for the University of Cebu Lapu-Lapu and Mandaue (UCLM).
+
+Answer the user's question in 1-2 short, friendly, plain English sentences.
+
+Your scope: UCLM campus info (location, programs, admissions, history,
+announcements, contact details), and how to use the UCFinder app (3D
+navigation, avatar customization, search, this chat).
+
+If the question is clearly unrelated to UCLM or UCFinder (homework help,
+other schools, general world topics, coding help, etc.), politely decline
+and redirect the user back to UCLM/UCFinder topics instead of answering it.
+
+Do not include markdown formatting, headers, or bullet points — plain
+conversational sentences only.
+
+USER QUESTION: {question}"""
+
+        response = model.generate_content(
+            prompt,
             tools=[{"google_search": {}}]
         )
-        search_info = search_response.text.strip() if search_response and search_response.text else "Information currently unavailable."
 
-        # Step B: Format the retrieved factual answer into strict JSON without tools attached
-        format_prompt = f"""{SYSTEM}
-
-SEARCH RESULT FACTS:
-{search_info}
-
-LOCAL ROOM CONTEXT:
-{context}
-
-USER QUESTION: {question}
-
-Create the final JSON response incorporating the search facts cleanly into the "answer" field."""
-
-        format_response = model.generate_content(
-            format_prompt,
-            generation_config={"response_mime_type": "application/json"}
-        )
-
-        raw = format_response.text.strip() if format_response and format_response.text else ""
-
-        parsed = json.loads(raw)
-
-        act_data = parsed.get("action", {})
-        if not isinstance(act_data, dict) or "type" not in act_data:
-            act_data = {"type": "none"}
+        answer_text = response.text.strip() if response and response.text else \
+            "Sorry, I don't have an answer for that right now."
 
         return AskResponse(
-            answer=parsed.get("answer", search_info),
-            action=ChatActionModel(**act_data),
+            answer=answer_text,
+            action=ChatActionModel(type="none"),
             found=False,
             room=None
         )
 
-    except Exception as e:
-        print(f"[Gemini Exception]: {e}")
+    except Exception:
+        print("[Gemini Exception]")
         traceback.print_exc()
 
         return AskResponse(
@@ -218,6 +197,7 @@ Create the final JSON response incorporating the search facts cleanly into the "
             found=False,
             room=None
         )
+
 
 @app.post("/transcribe", response_model=TranscribeResponse)
 async def transcribe(audio: UploadFile = File(...)):
