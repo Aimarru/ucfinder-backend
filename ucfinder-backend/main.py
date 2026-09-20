@@ -99,21 +99,18 @@ SYSTEM = """You are WAV AI, the in-app assistant for UCFinder — a 3D campus na
 
 YOUR SCOPE:
 1. Help users with UCLM campus room searches and physical navigation.
-2. Answer general questions about UCLM (location, programs, admissions, history, campus announcements, contact details). Use Google Search grounding to look up real-time information online.
+2. Answer general questions about UCLM (location, programs, admissions, history, campus announcements, contact details).
 3. Help users understand UCFinder app features (3D path navigation, avatar customization, search).
 
 STRICT OUT-OF-SCOPE REDIRECTION:
-If asked about topics completely unrelated to UCLM or UCFinder (e.g. general programming homework, other universities, politics, general world news), politely decline and redirect the user back to UCLM campus navigation or app support.
+If asked about topics completely unrelated to UCLM or UCFinder (e.g. general programming homework, other schools, politics, general world news), politely decline and redirect the user back to UCLM campus navigation or app support.
 
 STRICT JSON OUTPUT REQUIREMENT:
-Respond ONLY with a single valid raw JSON object. Do not wrap the response in markdown backticks or extra text outside the JSON.
-Structure:
+Respond ONLY with a single valid raw JSON object matching this structure exactly:
 {
   "answer": "1-2 short, friendly, plain English sentences answering the query directly.",
   "action": {
-    "type": "navigate" or "none",
-    "target": "EXACT nav_target from CONTEXT if navigating, otherwise empty string",
-    "label": "Button text or empty string"
+    "type": "none"
   }
 }"""
 
@@ -165,31 +162,38 @@ def ask(req: AskRequest):
             room=info
         )
 
-    # 2. General Queries: Handled by Gemini 2.0 Flash + Web Search Grounding
+    # 2. General Queries (2-Step Execution: Grounded Web Search -> JSON Formatting)
     hits = retrieve(question)
     context = json.dumps(hits) if hits else "[]"
 
-    prompt = f"""{SYSTEM}
+    try:
+        # Step A: Perform live web search using Google Search grounding
+        search_prompt = f"Answer this query about UCLM (University of Cebu Lapu-Lapu and Mandaue) in 1-2 factual sentences: {question}"
+        search_response = model.generate_content(
+            search_prompt,
+            tools=[{"google_search": {}}]
+        )
+        search_info = search_response.text.strip() if search_response and search_response.text else "Information currently unavailable."
+
+        # Step B: Format the retrieved factual answer into strict JSON without tools attached
+        format_prompt = f"""{SYSTEM}
+
+SEARCH RESULT FACTS:
+{search_info}
 
 LOCAL ROOM CONTEXT:
 {context}
 
-USER QUESTION: {question}"""
+USER QUESTION: {question}
 
-    try:
-        response = model.generate_content(
-            prompt,
-            tools=[{"google_search": {}}]
+Create the final JSON response incorporating the search facts cleanly into the "answer" field."""
+
+        format_response = model.generate_content(
+            format_prompt,
+            generation_config={"response_mime_type": "application/json"}
         )
 
-        raw = ""
-        if response and response.text:
-            raw = response.text.strip()
-
-        # Extract only the JSON block between '{' and '}' to avoid search metadata conflicts
-        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if json_match:
-            raw = json_match.group(0)
+        raw = format_response.text.strip() if format_response and format_response.text else ""
 
         parsed = json.loads(raw)
 
@@ -197,12 +201,8 @@ USER QUESTION: {question}"""
         if not isinstance(act_data, dict) or "type" not in act_data:
             act_data = {"type": "none"}
 
-        valid_targets = {e.get("nav_target") for e in hits if "nav_target" in e}
-        if act_data.get("type") == "navigate" and act_data.get("target") not in valid_targets:
-            act_data = {"type": "none"}
-
         return AskResponse(
-            answer=parsed.get("answer", "I am WAV AI, your UCLM campus guide. How can I assist you?"),
+            answer=parsed.get("answer", search_info),
             action=ChatActionModel(**act_data),
             found=False,
             room=None
@@ -213,7 +213,7 @@ USER QUESTION: {question}"""
         traceback.print_exc()
 
         return AskResponse(
-            answer="Sorry, I am having trouble connecting right now. Please try asking again.",
+            answer="Sorry, I had trouble finding that information right now. Please try asking again!",
             action=ChatActionModel(type="none"),
             found=False,
             room=None
