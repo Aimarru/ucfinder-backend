@@ -176,12 +176,12 @@ conversational sentences only.
 
 USER QUESTION: {question}"""
 
-        interaction = client.interactions.create(
+        response = client.models.generate_content(
             model=GEMINI_MODEL,
-            input=prompt
+            contents=prompt
         )
 
-        answer_text = interaction.output_text.strip() if interaction and interaction.output_text else \
+        answer_text = response.text.strip() if response and response.text else \
             "Sorry, I don't have an answer for that right now."
 
         return AskResponse(
@@ -217,15 +217,15 @@ async def transcribe(audio: UploadFile = File(...)):
 
         audio_file = client.files.upload(file=str(temp_path))
 
-        interaction = client.interactions.create(
+        response = client.models.generate_content(
             model=GEMINI_MODEL,
-            input=[
+            contents=[
                 "Transcribe the spoken words in this audio exactly into plain text. Output ONLY the transcribed text, nothing else.",
                 audio_file
             ]
         )
 
-        transcribed_text = interaction.output_text.strip() if interaction and interaction.output_text else ""
+        transcribed_text = response.text.strip() if response and response.text else ""
         return TranscribeResponse(text=transcribed_text)
 
     except Exception:
