@@ -30,9 +30,9 @@ else:
 # Initialize client using environment variable safely
 client = genai_client.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
-# Primary and Fallback model configuration
-PRIMARY_MODEL = "gemini-3.6-flash"
-FALLBACK_MODEL = "gemini-2.0-flash"
+
+PRIMARY_MODEL = "gemini-3.5-flash-lite"
+FALLBACK_MODEL = "gemini-3.1-flash-lite"
 
 
 # --- Models ---
