@@ -4,3 +4,4 @@ groq
 google-genai
 firebase-admin
 pydantic
+python-multipart
