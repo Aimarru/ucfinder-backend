@@ -48,8 +48,8 @@ BASE_DIR = Path(__file__).resolve().parent
 # Configuration (everything overridable through environment variables)
 # ----------------------------------------------------------------------------
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-PRIMARY_MODEL = os.environ.get("PRIMARY_MODEL", "gemini-3.8-flash")
-FALLBACK_MODEL = os.environ.get("FALLBACK_MODEL", "gemini-3.5-flash-lite")
+PRIMARY_MODEL = os.environ.get("PRIMARY_MODEL", "gemini-2.5-flash")
+FALLBACK_MODEL = os.environ.get("FALLBACK_MODEL", "gemini-2.5-flash-lite")
 ROUTER_MODEL = os.environ.get("ROUTER_MODEL", FALLBACK_MODEL)  # cheap + fast
 
 FIREBASE_BACKEND = os.environ.get("FIREBASE_BACKEND", "firestore").lower()  # firestore | rtdb | none
