@@ -1,6 +1,6 @@
 fastapi
-uvicorn[standard]
-pydantic>=2
+uvicorn
+groq
 google-genai
 firebase-admin
-python-multipart
+pydantic
