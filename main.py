@@ -522,7 +522,7 @@ Return JSON matching this schema:
 
 Intents:
 - find_room: locate room, office, building, facility or landmark (set room_query to place e.g. "CBE901", "library").
-- uclm_info: UCLM deans, faculty, personnel, events, announcements, admissions, tuition, history.
+- uclm_info: UCLM deans, faculty, personnel (e.g. CCS = College of Computer Studies), events, announcements, admissions, tuition, history.
 - app_help: how to use UCFinder or WAV AI.
 - greeting: hello / thanks / small talk.
 - off_topic: anything else.
