@@ -59,8 +59,8 @@ FALLBACK_MODEL = os.environ.get("FALLBACK_MODEL", "gemini-3.5-flash-lite")
 ROUTER_MODEL = os.environ.get("ROUTER_MODEL", "gemini-3.5-flash-lite")
 
 # Groq Active Production Models
-GROQ_PRIMARY_MODEL = os.environ.get("GROQ_PRIMARY_MODEL", "llama-3.3-70b-versatile")
-GROQ_ROUTER_MODEL = os.environ.get("GROQ_ROUTER_MODEL", "llama-3.1-8b-instant")
+GROQ_PRIMARY_MODEL = os.environ.get("GROQ_PRIMARY_MODEL", "openai/gpt-oss-120b")
+GROQ_ROUTER_MODEL = os.environ.get("GROQ_ROUTER_MODEL", "openai/gpt-oss-20b")
 
 FIREBASE_BACKEND = os.environ.get("FIREBASE_BACKEND", "firestore").lower()  # firestore | rtdb | none
 FIREBASE_COLLECTION = os.environ.get("FIREBASE_COLLECTION", "waypoints")
