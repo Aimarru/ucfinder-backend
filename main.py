@@ -81,7 +81,7 @@ GEMINI_TIMEOUT_MS = int(os.environ.get("GEMINI_TIMEOUT_MS", "10000"))
 OFFICIAL_SOURCES = [
     u.strip() for u in os.environ.get(
         "UCLM_SOURCES",
-        "https://www.facebook.com/UCLMOfficial,https://www.uc.edu.ph"
+        "https://www.facebook.com/UCLMCollegeofComputerStudies,https://www.facebook.com/ccsbitsandbytes,https://www.facebook.com/OfficialUCLMFocus,https://www.uc.edu.ph"
     ).split(",") if u.strip()
 ]
 
