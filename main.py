@@ -4,12 +4,12 @@ WAV AI backend for UCFinder (UCLM campus navigation app).
 Request flow for POST /ask
 --------------------------
 1. Fast local room match against the waypoint index (no LLM call, ~1 ms).
-2. If no local match -> a tiny "router" LLM call (Groq Llama 3.1 8B Instant) decides:
+2. If no local match -> a tiny "router" LLM call (Groq GPT-OSS 20B) decides:
      find_room | uclm_info | app_help | greeting | off_topic
 3. find_room  -> fuzzy search in the waypoint index -> navigate action for Unity
-   uclm_info -> Gemini + Google Search grounding + URL context (live web data) or Groq primary
-   app_help / greeting -> short answer, no web search
-   off_topic -> fixed polite refusal (no LLM answer call at all)
+   uclm_info  -> Gemini + Google Search & URL Context Crawling (live official web data)
+   app_help / greeting -> short answer via Groq primary (GPT-OSS 120B)
+   off_topic  -> fixed polite refusal (no LLM answer call at all)
 
 Waypoints come from Firebase (Firestore or Realtime Database), cached in memory
 and refreshed in the background. kb.json is used as an offline fallback.
@@ -81,7 +81,7 @@ GEMINI_TIMEOUT_MS = int(os.environ.get("GEMINI_TIMEOUT_MS", "10000"))
 OFFICIAL_SOURCES = [
     u.strip() for u in os.environ.get(
         "UCLM_SOURCES",
-        "https://www.facebook.com/UCLMCollegeofComputerStudies,https://www.facebook.com/ccsbitsandbytes,https://www.facebook.com/OfficialUCLMFocus,https://www.uc.edu.ph"
+        "https://www.facebook.com/OfficialUCLMFocus,https://www.facebook.com/UCLMCollegeofComputerStudies,https://www.facebook.com/ccsbitsandbytes,https://www.uc.edu.ph"
     ).split(",") if u.strip()
 ]
 
@@ -438,7 +438,7 @@ async def groq_call(
     json_mode: bool = False
 ) -> Optional[str]:
     """Execute completion requests using Groq API."""
-    if not groq_client:
+    if not GROQ_API_KEY or not groq_client:
         return None
     messages = []
     if system_prompt:
@@ -450,7 +450,7 @@ async def groq_call(
             "model": model,
             "messages": messages,
             "temperature": 0.1 if json_mode else 0.3,
-            "max_tokens": 300,
+            "max_tokens": 1024,
         }
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
@@ -522,7 +522,7 @@ Return JSON matching this schema:
 
 Intents:
 - find_room: locate room, office, building, facility or landmark (set room_query to place e.g. "CBE901", "library").
-- uclm_info: UCLM deans, faculty, personnel (e.g. CCS = College of Computer Studies), events, announcements, admissions, tuition, history.
+- uclm_info: UCLM deans, faculty, personnel, sports teams (Webmasters, Baby Webmasters, CESAFI games), events, announcements, admissions, tuition, history. For forgiving typo matches (e.g. "baby maters" -> Baby Webmasters), classify as uclm_info.
 - app_help: how to use UCFinder or WAV AI.
 - greeting: hello / thanks / small talk.
 - off_topic: anything else.
@@ -539,8 +539,12 @@ SCOPE: Only UCLM (location, faculty, current deans and personnel, events, announ
 history, social media updates) and how to use UCFinder. If the request is not about these, reply with
 exactly: OFF_TOPIC
 
-LIVE DATA SOURCES:
+LIVE DATA SOURCES TO CRAWL:
 {sources}
+
+INSTRUCTIONS:
+1. Crawl and prioritize the official sources above for any UCLM events, sports, deans, or news.
+2. If the user prompt contains typos (e.g., 'baby maters'), resolve it to the correct entity ('Baby Webmasters').
 
 STYLE: 1-2 short, friendly, plain-English sentences (about 40 words max). No markdown, headers, bullets, or citation markers."""
 
@@ -730,7 +734,7 @@ async def _ask_impl(req: AskRequest, question: str) -> AskResponse:
                 "or browse the building and floor list.", "find_room"
             )
 
-        # 3) Generation step (Groq primary -> Gemini fallback for live web grounding)
+        # 3) Generation step
         live = route.intent == "uclm_info"
         cache_key = _norm(question) if (live and not req.history) else None
         if cache_key and (cached := answer_cache.get(cache_key)):
@@ -739,29 +743,49 @@ async def _ask_impl(req: AskRequest, question: str) -> AskResponse:
         text = ""
         sources = []
 
-        # Try Groq for fast execution
-        groq_text = await groq_call(
-            prompt=question,
-            system_prompt=answer_system(),
-            model=GROQ_PRIMARY_MODEL
-        )
-        if groq_text:
-            text = groq_text
-
-        # Fall back to Gemini if live grounding or full response is needed
-        if not text and gemini_sdk_client:
-            tools = ([types.Tool(google_search=types.GoogleSearch()),
-                      types.Tool(url_context=types.UrlContext())] if live else None)
+        # FOR uclm_info: DYNAMICALLY CRAWL OFFICIAL SITES VIA GEMINI GROUNDING & URL CONTEXT
+        if live and gemini_sdk_client:
+            tools = [
+                types.Tool(google_search=types.GoogleSearch()),
+                types.Tool(url_context=types.UrlContext())
+            ]
             resp = await gemini_call(
                 history_to_contents(req.history, question),
                 config=types.GenerateContentConfig(
-                    system_instruction=answer_system(), tools=tools, temperature=0.3,
-                    max_output_tokens=200
+                    system_instruction=answer_system(),
+                    tools=tools,
+                    temperature=0.3,
+                    max_output_tokens=500
                 ),
-                models=[PRIMARY_MODEL, FALLBACK_MODEL], max_retries=1
+                models=[PRIMARY_MODEL, FALLBACK_MODEL],
+                max_retries=1
             )
             text = (getattr(resp, "text", None) or "").strip() if resp else ""
-            sources = extract_sources(resp) if live else []
+            sources = extract_sources(resp)
+
+        # FOR NON-LIVE INTENTS (e.g. app_help, greeting): USE GROQ FOR ULTRA-FAST EXECUTION
+        if not text:
+            groq_text = await groq_call(
+                prompt=question,
+                system_prompt=answer_system(),
+                model=GROQ_PRIMARY_MODEL
+            )
+            if groq_text:
+                text = groq_text
+
+        # FINAL FALLBACK TO GEMINI WITHOUT TOOLS IF GROQ IS UNAVAILABLE
+        if not text and gemini_sdk_client:
+            resp = await gemini_call(
+                history_to_contents(req.history, question),
+                config=types.GenerateContentConfig(
+                    system_instruction=answer_system(),
+                    temperature=0.3,
+                    max_output_tokens=500
+                ),
+                models=[PRIMARY_MODEL, FALLBACK_MODEL],
+                max_retries=1
+            )
+            text = (getattr(resp, "text", None) or "").strip() if resp else ""
 
         if not text:
             return text_response(BUSY_REPLY, route.intent)
