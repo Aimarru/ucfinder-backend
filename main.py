@@ -118,16 +118,13 @@ BLOCKED_CRAWL_HOSTS = {"facebook.com", "fb.com", "instagram.com", "twitter.com",
 
 PH_TZ = timezone(timedelta(hours=8))
 
-OFF_TOPIC_REPLY = ("I can only help with University of Cebu Lapu-Lapu and Mandaue (UCLM) "
-                   "and the UCFinder app. Try asking me about a room, a faculty member, "
-                   "an event, or how to navigate the campus!")
-OTHER_CAMPUS_REPLY = ("I only cover the UCLM (Lapu-Lapu and Mandaue) campus, so I can't help with "
-                      "other University of Cebu campuses. Ask me anything about UCLM!")
+OFF_TOPIC_REPLY = ("I can only help topics related with University of Cebu Lapu-Lapu and Mandaue and how to navigate UCLM campus! ")
+
+OTHER_CAMPUS_REPLY = ("I only cover the UCLM (Lapu-Lapu and Mandaue) campus, so I can't help with other University of Cebu campuses. Ask me anything about UCLM!")
 UNVERIFIED_REPLY = ("I couldn't verify that from official UCLM sources, so I don't want to guess. "
                     "Please check the official UCLM Facebook page for the latest.")
 BUSY_REPLY = "Sorry, our AI system is currently busy. Please try asking again in a few moments!"
-GREETING_REPLY = ("Hi! I'm WAV AI. Ask me where a room is, or about UCLM deans, faculty, "
-                  "events and announcements.")
+GREETING_REPLY = ("Hi! I'm WAV AI. the friendly AI that will help you in your campus navigation. ")
 THANKS_REPLY = "You're welcome! Ask me anytime about UCLM rooms, people, or events."
 
 gemini_sdk_client = genai_client.Client(

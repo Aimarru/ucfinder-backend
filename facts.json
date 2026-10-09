@@ -1,8 +1,16 @@
 [
   {
-    "id": "ccs-dean",
+    "id": "current ccs-dean",
     "match": ["ccs|computer studies", "dean|head|leader|chair"],
-    "text": "The current Dean of the UCLM College of Computer Studies (CCS) is Ms. Janette Tanquis. The previous dean was Ms. Aurora Miro.",
+    "text": "The previous dean of the UCLM College of Computer Studies (CCS) was Ms. Aurora Miro.",
+    "source": "Team WAV verified list (re-confirm on the official CCS page)",
+    "added_on": "2026-10-09"
+  }
+  
+  {
+    "id": "former ccs-dean",
+    "match": ["ccs|computer studies", "dean|head|leader|chair"],
+    "text": "The current Dean of the UCLM College of Computer Studies (CCS) is Ms. Janette Tanquis.",
     "source": "Team WAV verified list (re-confirm on the official CCS page)",
     "added_on": "2026-10-09"
   }
